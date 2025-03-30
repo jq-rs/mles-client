@@ -11,6 +11,7 @@ use rpassword::read_password;
 use serde_json::json;
 use siphasher::sip::SipHasher;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::env;
 use std::hash::Hasher;
 use std::io::{self, Write};
@@ -23,6 +24,7 @@ use tokio_tungstenite::{
 };
 
 mod message;
+mod proxy;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -38,209 +40,251 @@ struct Args {
     /// User ID
     #[arg(short, long)]
     uid: Option<String>,
+
+    /// Second server URL for proxy mode
+    #[arg(long)]
+    proxy_server: Option<String>,
 }
 
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-    let url = args.server;
-    let mut request = url.into_client_request().expect("Invalid request");
-    request
-        .headers_mut()
-        .insert("Sec-WebSocket-Protocol", "mles-websocket".parse().unwrap());
 
-    // Try to connect and exit on failure
-    let (ws_stream, _) = connect_async(request).await.unwrap_or_else(|e| {
-        eprintln!("Failed to connect: {}", e);
-        process::exit(1);
-    });
-    let (write, mut read) = ws_stream.split();
-    let write = Arc::new(Mutex::new(write)); // Share write between tasks
-    let write_clone = Arc::clone(&write);
-    let messages = Arc::new(Mutex::new(Vec::new()));
-    let messages_clone = Arc::clone(&messages);
-    let user_colors = Arc::new(Mutex::new(HashMap::new()));
+    if args.proxy_server.is_some() {
+        let proxy_server = args.proxy_server.unwrap();
+        // Get necessary information
+        let uid = args.uid.unwrap_or_else(|| {
+            print!("UID: ");
+            io::stdout().flush().unwrap();
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap();
+            input.trim().to_string()
+        });
 
-    // Ask for UID and Channel
-    let mut uid = String::new();
-    let mut channel = String::new();
-    let mut stdout = io::stdout();
+        let channel = args.channel.unwrap_or_else(|| {
+            print!("Channel: ");
+            io::stdout().flush().unwrap();
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap();
+            input.trim().to_string()
+        });
 
-    if let Some(arg_uid) = args.uid {
-        uid = arg_uid;
+        // Run in proxy mode
+        if let Err(e) = proxy::run_proxy(args.server, proxy_server, channel, uid).await {
+            eprintln!("Proxy {}", e);
+            process::exit(1);
+        }
     } else {
-        print!("UID: ");
-        stdout.flush().unwrap();
-        io::stdin().read_line(&mut uid).unwrap();
-    }
+        let seen_messages = Arc::new(Mutex::new(HashSet::new())); // Add this
+        let seen_messages_clone = Arc::clone(&seen_messages);
+        let url = args.server;
+        let mut request = url.into_client_request().expect("Invalid request");
+        request
+            .headers_mut()
+            .insert("Sec-WebSocket-Protocol", "mles-websocket".parse().unwrap());
 
-    if let Some(arg_channel) = args.channel {
-        channel = arg_channel;
-    } else {
-        print!("Channel: ");
-        stdout.flush().unwrap();
-        io::stdin().read_line(&mut channel).unwrap();
-    }
-    print!("Shared key: ");
-    stdout.flush().unwrap();
-    let key = read_password().unwrap();
-    let uid = uid.trim().to_string();
-    let channel = channel.trim().to_string();
-    let encryption_key = message::derive_key(&key, &channel);
+        // Try to connect and exit on failure
+        let (ws_stream, _) = connect_async(request).await.unwrap_or_else(|e| {
+            eprintln!("Failed to connect: {}", e);
+            process::exit(1);
+        });
+        let (write, mut read) = ws_stream.split();
+        let write = Arc::new(Mutex::new(write)); // Share write between tasks
+        let write_clone = Arc::clone(&write);
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let messages_clone = Arc::clone(&messages);
+        let user_colors = Arc::new(Mutex::new(HashMap::new()));
 
-    let first_message = {
-        let mut hasher = SipHasher::new();
-        hasher.write(uid.as_bytes());
-        hasher.write(channel.as_bytes());
+        // Ask for UID and Channel
+        let mut uid = String::new();
+        let mut channel = String::new();
+        let mut stdout = io::stdout();
 
-        // If MLES_KEY exists, include it in the hash
-        if let Ok(mles_key) = env::var("MLES_KEY") {
-            hasher.write(mles_key.as_bytes());
+        if let Some(arg_uid) = args.uid {
+            uid = arg_uid;
+        } else {
+            print!("UID: ");
+            stdout.flush().unwrap();
+            io::stdin().read_line(&mut uid).unwrap();
         }
 
-        let hash = hasher.finish();
+        if let Some(arg_channel) = args.channel {
+            channel = arg_channel;
+        } else {
+            print!("Channel: ");
+            stdout.flush().unwrap();
+            io::stdin().read_line(&mut channel).unwrap();
+        }
+        print!("Shared key: ");
+        stdout.flush().unwrap();
+        let key = read_password().unwrap();
+        let uid = uid.trim().to_string();
+        let channel = channel.trim().to_string();
+        let encryption_key = message::derive_key(&key, &channel);
 
-        json!({
-            "uid": uid,
-            "channel": channel,
-            "auth": format!("{:016x}", hash)
-        })
-        .to_string()
-    };
-    // Send first message
-    {
-        let mut write_guard = write.lock().await;
-        write_guard
-            .send(Message::Text(first_message))
-            .await
-            .unwrap();
-    }
+        let first_message = {
+            let mut hasher = SipHasher::new();
+            hasher.write(uid.as_bytes());
+            hasher.write(channel.as_bytes());
 
-    // Create a channel to signal program termination
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
-    let shutdown_tx_clone = shutdown_tx.clone();
+            // If MLES_KEY exists, include it in the hash
+            if let Ok(mles_key) = env::var("MLES_KEY") {
+                hasher.write(mles_key.as_bytes());
+            }
 
-    // Spawn a task to receive messages
-    let uid_clone = uid.clone();
-    let channel_clone = channel.clone();
-    let user_colors_clone = Arc::clone(&user_colors);
-    let message_handler = tokio::spawn(async move {
-        while let Some(Ok(msg)) = read.next().await {
-            if let Message::Binary(data) = msg {
-                if let Some(decrypted) = message::decrypt_message(&encryption_key, &data) {
-                    let mut msgs = messages_clone.lock().await;
-                    let mut colors = user_colors_clone.lock().await;
+            let hash = hasher.finish();
 
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&decrypted) {
-                        if let Some(join_uid) = parsed.get("uid").and_then(|v| v.as_str()) {
-                            if join_uid != uid_clone {
-                                assign_color(&mut colors, join_uid);
-                                msgs.push(format!("{} joined.", join_uid));
-                            }
-                        }
-                    } else {
-                        let parts: Vec<&str> = decrypted.splitn(2, ' ').collect(); // Split first space to get timestamp
-                        if parts.len() == 2 {
-                            let timestamp = parts[0];
-                            let rest = parts[1];
+            json!({
+                "uid": uid,
+                "channel": channel,
+                "auth": format!("{:016x}", hash)
+            })
+            .to_string()
+        };
+        // Send first message
+        {
+            let mut write_guard = write.lock().await;
+            write_guard
+                .send(Message::Text(first_message))
+                .await
+                .unwrap();
+        }
 
-                            // Split the rest at the first colon
-                            if let Some((sender, message)) = rest.split_once(':') {
-                                if sender != uid_clone {
-                                    assign_color(&mut colors, sender);
-                                    msgs.push(format!("{} {}: {}", timestamp, sender, message));
-                                } else {
-                                    msgs.push(format!("{} {}", timestamp, message));
+        // Create a channel to signal program termination
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+        let shutdown_tx_clone = shutdown_tx.clone();
+
+        // Spawn a task to receive messages
+        let uid_clone = uid.clone();
+        let channel_clone = channel.clone();
+        let user_colors_clone = Arc::clone(&user_colors);
+        let message_handler = tokio::spawn(async move {
+            while let Some(Ok(msg)) = read.next().await {
+                if let Message::Binary(data) = msg {
+                    if let Some(decrypted) = message::decrypt_message(&encryption_key, &data) {
+                        let mut seen = seen_messages_clone.lock().await;
+                        if seen.insert(decrypted.clone()) {
+                            let mut msgs = messages_clone.lock().await;
+                            let mut colors = user_colors_clone.lock().await;
+                            // Only process the message if we haven't seen it before
+
+                            if let Ok(parsed) =
+                                serde_json::from_str::<serde_json::Value>(&decrypted)
+                            {
+                                if let Some(join_uid) = parsed.get("uid").and_then(|v| v.as_str()) {
+                                    if join_uid != uid_clone {
+                                        assign_color(&mut colors, join_uid);
+                                        msgs.push(format!("{} joined.", join_uid));
+                                    }
+                                }
+                            } else {
+                                let parts: Vec<&str> = decrypted.splitn(2, ' ').collect(); // Split first space to get timestamp
+                                if parts.len() == 2 {
+                                    let timestamp = parts[0];
+                                    let rest = parts[1];
+
+                                    // Split the rest at the first colon
+                                    if let Some((sender, message)) = rest.split_once(':') {
+                                        if sender != uid_clone {
+                                            assign_color(&mut colors, sender);
+                                            msgs.push(format!(
+                                                "{} {}: {}",
+                                                timestamp, sender, message
+                                            ));
+                                        } else {
+                                            msgs.push(format!("{} {}", timestamp, message));
+                                        }
+                                    }
                                 }
                             }
+                            print_ui(&msgs, &colors, &uid_clone, &channel_clone);
                         }
                     }
-                    print_ui(&msgs, &colors, &uid_clone, &channel_clone);
                 }
             }
-        }
-        // Connection closed
-        let _ = shutdown_tx.send(()).await;
-    });
+            // Connection closed
+            let _ = shutdown_tx.send(()).await;
+        });
 
-    // Input handling in a separate task
-    let input_handler = tokio::spawn(async move {
-        let mut input = String::new();
+        // Input handling in a separate task
+        let input_handler = tokio::spawn(async move {
+            let mut input = String::new();
 
-        loop {
-            input.clear();
-            {
-                let msgs = messages.lock().await;
-                let colors = user_colors.lock().await;
-                print_ui(&*msgs, &*colors, &uid, &channel); // Dereference the MutexGuards
-            } // Guards are dropped here
-            print!("\r> ");
-            io::stdout().flush().unwrap();
+            loop {
+                input.clear();
+                {
+                    let msgs = messages.lock().await;
+                    let colors = user_colors.lock().await;
+                    print_ui(&*msgs, &*colors, &uid, &channel); // Dereference the MutexGuards
+                } // Guards are dropped here
+                print!("\r> ");
+                io::stdout().flush().unwrap();
 
-            // Use tokio's stdin to make it cancellable
-            let mut line = String::new();
-            if let Ok(_) = tokio::io::AsyncBufReadExt::read_line(
-                &mut tokio::io::BufReader::new(tokio::io::stdin()),
-                &mut line,
-            )
-            .await
-            {
-                let input = line.trim();
-                if !input.is_empty() {
-                    let timestamp = get_timestamp();
-                    let formatted_message = format!("{} {}:{}", timestamp, uid, input);
-                    let mut msgs = messages.lock().await;
-                    msgs.push(format!("{} {}", timestamp, input));
-                    drop(msgs);
+                // Use tokio's stdin to make it cancellable
+                let mut line = String::new();
+                if let Ok(_) = tokio::io::AsyncBufReadExt::read_line(
+                    &mut tokio::io::BufReader::new(tokio::io::stdin()),
+                    &mut line,
+                )
+                .await
+                {
+                    let input = line.trim();
+                    if !input.is_empty() {
+                        let timestamp = get_timestamp();
+                        let formatted_message = format!("{} {}:{}", timestamp, uid, input);
+                        let mut msgs = messages.lock().await;
+                        msgs.push(format!("{} {}", timestamp, input));
+                        drop(msgs);
 
-                    let mut write_guard = write.lock().await;
-                    if let Err(e) = write_guard
-                        .send(Message::Binary(message::encrypt_message(
-                            &encryption_key,
-                            &formatted_message,
-                        )))
-                        .await
-                    {
-                        eprintln!("\nFailed to send message: {}", e);
-                        let _ = shutdown_tx_clone.send(()).await;
-                        break;
+                        let mut write_guard = write.lock().await;
+                        if let Err(e) = write_guard
+                            .send(Message::Binary(message::encrypt_message(
+                                &encryption_key,
+                                &formatted_message,
+                            )))
+                            .await
+                        {
+                            eprintln!("\nFailed to send message: {}", e);
+                            let _ = shutdown_tx_clone.send(()).await;
+                            break;
+                        }
                     }
                 }
             }
-        }
-    });
+        });
 
-    // Wait for either task to finish
-    tokio::select! {
-        _ = shutdown_rx.recv() => {
+        // Wait for either task to finish
+        tokio::select! {
+            _ = shutdown_rx.recv() => {
+            }
+            _ = tokio::signal::ctrl_c() => {
+                // Send close frame
+                            let mut write_guard = write_clone.lock().await;
+                            let _ = write_guard.send(Message::Close(Some(CloseFrame {
+                                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+                                reason: "Client shutdown".into(),
+                            }))).await;
+            }
         }
-        _ = tokio::signal::ctrl_c() => {
-            // Send close frame
-                        let mut write_guard = write_clone.lock().await;
-                        let _ = write_guard.send(Message::Close(Some(CloseFrame {
-                            code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
-                            reason: "Client shutdown".into(),
-                        }))).await;
-        }
+        // Abort the tasks before cleanup
+        message_handler.abort();
+        input_handler.abort();
+
+        // Wait for tasks to finish
+        let _ = tokio::join!(message_handler, input_handler);
+
+        // Clean up and exit
+        execute!(
+            io::stdout(),
+            Clear(ClearType::All),
+            cursor::MoveTo(0, 0),
+            SetBackgroundColor(Color::Reset),
+            SetForegroundColor(Color::Reset)
+        )
+        .unwrap();
+
+        process::exit(0);
     }
-    // Abort the tasks before cleanup
-    message_handler.abort();
-    input_handler.abort();
-
-    // Wait for tasks to finish
-    let _ = tokio::join!(message_handler, input_handler);
-
-    // Clean up and exit
-    execute!(
-        io::stdout(),
-        Clear(ClearType::All),
-        cursor::MoveTo(0, 0),
-        SetBackgroundColor(Color::Reset),
-        SetForegroundColor(Color::Reset)
-    )
-    .unwrap();
-
-    process::exit(0);
 }
 
 fn get_timestamp() -> String {
