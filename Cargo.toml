@@ -1,6 +1,6 @@
 [package]
 name = "mles-client"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2024"
 description = "A prototype implementation of the Mles v2 protocol with end-to-end encryption support"
 license = "MPL-2.0"
@@ -24,3 +24,5 @@ base64 = "0.21"
 rpassword = "7.0"
 clap = { version = "4.4", features = ["derive"] }
 siphasher = "1"
+rumqttc = "0.23"
+url = "2.5"
