@@ -1,5 +1,6 @@
 # Mles Client
 
+[![Crates.io](https://img.shields.io/crates/v/mles-client.svg)](https://crates.io/crates/mles-client)
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
 
 A secure WebSocket-based messaging client with proxy capabilities. The client supports end-to-end encryption using XChaCha20-Poly1305 and features both direct messaging and message proxying between servers.
