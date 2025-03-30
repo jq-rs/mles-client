@@ -24,6 +24,7 @@ use tokio_tungstenite::{
 };
 
 mod message;
+mod mqtt_proxy;
 mod proxy;
 
 #[derive(Parser, Debug)]
@@ -44,13 +45,40 @@ struct Args {
     /// Second server URL for proxy mode
     #[arg(long)]
     proxy_server: Option<String>,
+
+    /// MQTT broker URL for MQTT proxy mode
+    #[arg(long)]
+    mqtt_broker: Option<String>,
 }
 
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
 
-    if args.proxy_server.is_some() {
+    if let Some(mqtt_broker) = args.mqtt_broker {
+        // Get necessary information
+        let uid = args.uid.unwrap_or_else(|| {
+            print!("UID: ");
+            io::stdout().flush().unwrap();
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap();
+            input.trim().to_string()
+        });
+
+        let channel = args.channel.unwrap_or_else(|| {
+            print!("Channel: ");
+            io::stdout().flush().unwrap();
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap();
+            input.trim().to_string()
+        });
+
+        // Run in MQTT proxy mode
+        if let Err(e) = mqtt_proxy::run_mqtt_proxy(args.server, mqtt_broker, channel, uid).await {
+            eprintln!("MQTT Proxy error: {}", e);
+            process::exit(1);
+        }
+    } else if args.proxy_server.is_some() {
         let proxy_server = args.proxy_server.unwrap();
         // Get necessary information
         let uid = args.uid.unwrap_or_else(|| {
@@ -206,6 +234,7 @@ async fn main() {
             let _ = shutdown_tx.send(()).await;
         });
 
+        let seen_messages_send = Arc::clone(&seen_messages);
         // Input handling in a separate task
         let input_handler = tokio::spawn(async move {
             let mut input = String::new();
@@ -231,22 +260,25 @@ async fn main() {
                     let input = line.trim();
                     if !input.is_empty() {
                         let timestamp = get_timestamp();
+                        let mut seen = seen_messages_send.lock().await;
                         let formatted_message = format!("{} {}:{}", timestamp, uid, input);
-                        let mut msgs = messages.lock().await;
-                        msgs.push(format!("{} {}", timestamp, input));
-                        drop(msgs);
+                        if seen.insert(formatted_message.clone()) {
+                            let mut msgs = messages.lock().await;
+                            msgs.push(format!("{} {}", timestamp, input));
+                            drop(msgs);
 
-                        let mut write_guard = write.lock().await;
-                        if let Err(e) = write_guard
-                            .send(Message::Binary(message::encrypt_message(
-                                &encryption_key,
-                                &formatted_message,
-                            )))
-                            .await
-                        {
-                            eprintln!("\nFailed to send message: {}", e);
-                            let _ = shutdown_tx_clone.send(()).await;
-                            break;
+                            let mut write_guard = write.lock().await;
+                            if let Err(e) = write_guard
+                                .send(Message::Binary(message::encrypt_message(
+                                    &encryption_key,
+                                    &formatted_message,
+                                )))
+                                .await
+                            {
+                                eprintln!("\nFailed to send message: {}", e);
+                                let _ = shutdown_tx_clone.send(()).await;
+                                break;
+                            }
                         }
                     }
                 }
