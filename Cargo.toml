@@ -2,6 +2,12 @@
 name = "mles-client"
 version = "2.0.0"
 edition = "2024"
+description = "A prototype implementation of the Mles v2 protocol with end-to-end encryption support"
+license = "MPL-2.0"
+authors = ["jq-rs <jq-rs@mles.io>"]
+repository = "https://github.com/jq-rs/mles-client"
+keywords = ["mles", "websocket", "chat", "client", "proxy"]
+categories = ["network-programming", "cryptography"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
