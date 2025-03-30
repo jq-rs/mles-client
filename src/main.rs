@@ -234,6 +234,7 @@ async fn main() {
             let _ = shutdown_tx.send(()).await;
         });
 
+        let seen_messages_send = Arc::clone(&seen_messages);
         // Input handling in a separate task
         let input_handler = tokio::spawn(async move {
             let mut input = String::new();
@@ -259,22 +260,25 @@ async fn main() {
                     let input = line.trim();
                     if !input.is_empty() {
                         let timestamp = get_timestamp();
+                        let mut seen = seen_messages_send.lock().await;
                         let formatted_message = format!("{} {}:{}", timestamp, uid, input);
-                        let mut msgs = messages.lock().await;
-                        msgs.push(format!("{} {}", timestamp, input));
-                        drop(msgs);
+                        if seen.insert(formatted_message.clone()) {
+                            let mut msgs = messages.lock().await;
+                            msgs.push(format!("{} {}", timestamp, input));
+                            drop(msgs);
 
-                        let mut write_guard = write.lock().await;
-                        if let Err(e) = write_guard
-                            .send(Message::Binary(message::encrypt_message(
-                                &encryption_key,
-                                &formatted_message,
-                            )))
-                            .await
-                        {
-                            eprintln!("\nFailed to send message: {}", e);
-                            let _ = shutdown_tx_clone.send(()).await;
-                            break;
+                            let mut write_guard = write.lock().await;
+                            if let Err(e) = write_guard
+                                .send(Message::Binary(message::encrypt_message(
+                                    &encryption_key,
+                                    &formatted_message,
+                                )))
+                                .await
+                            {
+                                eprintln!("\nFailed to send message: {}", e);
+                                let _ = shutdown_tx_clone.send(()).await;
+                                break;
+                            }
                         }
                     }
                 }
