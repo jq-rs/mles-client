@@ -3,9 +3,15 @@
 [![Crates.io](https://img.shields.io/crates/v/mles-client.svg)](https://crates.io/crates/mles-client)
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
 
-A secure WebSocket-based messaging client with proxy capabilities. The client supports end-to-end encryption using XChaCha20-Poly1305 and features both direct messaging and message proxying between servers.
+A prototype implementation of the [Mles v2 protocol](https://github.com/jq-rs/mles-rs). This client serves as an example implementation and proof-of-concept for the protocol, demonstrating WebSocket-based messaging with end-to-end encryption using XChaCha20-Poly1305.
 
-## Features
+**⚠️ Important Note:** This is a prototype implementation intended for demonstration and learning purposes. It should not be used in production environments or for any critical applications.
+
+## About Mles Protocol
+
+This client implements the [Mles v2 protocol](https://github.com/jq-rs/mles-rs) (Modern Lightweight channEl Service), a client-server data distribution protocol designed for lightweight and reliable distributed publish-subscribe data service. For production implementations and more detailed protocol specifications, please visit https://mles.io.
+
+## Client Features
 
 - End-to-end encryption using XChaCha20-Poly1305
 - Real-time messaging with colorized usernames
@@ -48,6 +54,16 @@ mles-client -s wss://server1.com --proxy-server wss://server2.com -c channel -u 
 
 - `MLES_KEY`: Optional shared key for authentication
 
+## Implementation Notes
+
+This implementation includes:
+- Basic protocol compliance with Mles v2
+- Example encryption using XChaCha20-Poly1305
+- Prototype proxy functionality
+- Simple terminal-based UI
+
+While functional, this implementation prioritizes demonstrating protocol concepts over production-ready features and security hardening.
+
 ## Features in Detail
 
 ### Security
@@ -83,7 +99,6 @@ cargo build --release
 - clap: Command line argument parsing
 - crossterm: Terminal UI
 - serde_json: JSON handling
-- siphasher: Authentication
 
 ## Acknowledgments
 
