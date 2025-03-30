@@ -1,4 +1,4 @@
-# Mles Client
+# mles-client
 
 [![Crates.io](https://img.shields.io/crates/v/mles-client.svg)](https://crates.io/crates/mles-client)
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
@@ -17,6 +17,7 @@ This client implements the [Mles v2 protocol](https://github.com/jq-rs/mles-rs) 
 - Real-time messaging with colorized usernames
 - Message deduplication
 - Proxy mode for connecting two Mles servers
+- MQTT proxy mode for bridging Mles with MQTT brokers
 - Local timestamp conversion
 - Secure key derivation using Scrypt and Blake2b
 - Support for shared keys via environment variables
@@ -43,12 +44,22 @@ mles-client -c mychannel -u myuser
 mles-client -s wss://server1.com --proxy-server wss://server2.com -c channel -u proxy-user
 ```
 
+### MQTT Proxy Mode
+
+```bash
+# Connect Mles server to MQTT broker
+mles-client -s wss://mles.io --mqtt-broker mqtt://test.mosquitto.org:1883 -c channel -u mqttproxy
+```
+
+This mode allows bidirectional message forwarding between a Mles server and an MQTT broker. Messages sent to the Mles channel will be published to the MQTT topic and vice versa. The MQTT topic name matches the Mles channel name.
+
 ## Command Line Arguments
 
 - `-s, --server`: WebSocket server URL (default: wss://mles.io)
 - `-c, --channel`: Channel name
 - `-u, --uid`: User ID
 - `--proxy-server`: Second server URL for proxy mode
+- `--mqtt-broker`: MQTT broker URL for MQTT proxy mode
 
 ## Environment Variables
 
@@ -61,6 +72,7 @@ This implementation includes:
 - Example encryption using XChaCha20-Poly1305
 - Prototype proxy functionality
 - Simple terminal-based UI
+- MQTT bridge functionality
 
 While functional, this implementation prioritizes demonstrating protocol concepts over production-ready features and security hardening.
 
@@ -79,6 +91,7 @@ While functional, this implementation prioritizes demonstrating protocol concept
 
 ### Proxy Mode
 - Bidirectional message forwarding between servers
+- MQTT proxy support for integration with MQTT brokers
 - Live statistics showing message counts
 - Auto-reconnect capabilities
 - Clean shutdown handling
@@ -99,6 +112,7 @@ cargo build --release
 - clap: Command line argument parsing
 - crossterm: Terminal UI
 - serde_json: JSON handling
+- rumqttc: MQTT client implementation
 
 ## Acknowledgments
 
