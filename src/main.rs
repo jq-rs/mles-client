@@ -184,7 +184,6 @@ async fn main() {
 
         // Spawn a task to receive messages
         let uid_clone = uid.clone();
-        let channel_clone = channel.clone();
         let user_colors_clone = Arc::clone(&user_colors);
         let message_handler = tokio::spawn(async move {
             while let Some(Ok(msg)) = read.next().await {
@@ -194,7 +193,6 @@ async fn main() {
                         if seen.insert(decrypted.clone()) {
                             let mut msgs = messages_clone.lock().await;
                             let mut colors = user_colors_clone.lock().await;
-                            // Only process the message if we haven't seen it before
 
                             if let Ok(parsed) =
                                 serde_json::from_str::<serde_json::Value>(&decrypted)
@@ -206,26 +204,18 @@ async fn main() {
                                     }
                                 }
                             } else {
-                                let parts: Vec<&str> = decrypted.splitn(2, ' ').collect(); // Split first space to get timestamp
+                                let parts: Vec<&str> = decrypted.splitn(2, ' ').collect();
                                 if parts.len() == 2 {
                                     let timestamp = parts[0];
                                     let rest = parts[1];
 
-                                    // Split the rest at the first colon
                                     if let Some((sender, message)) = rest.split_once(':') {
-                                        if sender != uid_clone {
-                                            assign_color(&mut colors, sender);
-                                            msgs.push(format!(
-                                                "{} {}: {}",
-                                                timestamp, sender, message
-                                            ));
-                                        } else {
-                                            msgs.push(format!("{} {}", timestamp, message));
-                                        }
+                                        assign_color(&mut colors, sender);
+                                        msgs.push(format!("{} {}: {}", timestamp, sender, message));
                                     }
                                 }
                             }
-                            print_ui(&msgs, &colors, &uid_clone, &channel_clone);
+                            print_ui(&msgs, &colors, &uid_clone);
                         }
                     }
                 }
@@ -244,7 +234,7 @@ async fn main() {
                 {
                     let msgs = messages.lock().await;
                     let colors = user_colors.lock().await;
-                    print_ui(&*msgs, &*colors, &uid, &channel); // Dereference the MutexGuards
+                    print_ui(&*msgs, &*colors, &uid); // Dereference the MutexGuards
                 } // Guards are dropped here
                 print!("\r> ");
                 io::stdout().flush().unwrap();
@@ -261,10 +251,10 @@ async fn main() {
                     if !input.is_empty() {
                         let timestamp = get_timestamp();
                         let mut seen = seen_messages_send.lock().await;
-                        let formatted_message = format!("{} {}:{}", timestamp, uid, input);
+                        let formatted_message = format!("{} {}: {}", timestamp, uid, input);
                         if seen.insert(formatted_message.clone()) {
                             let mut msgs = messages.lock().await;
-                            msgs.push(format!("{} {}", timestamp, input));
+                            msgs.push(format!("{} {}: {}", timestamp, uid, input));
                             drop(msgs);
 
                             let mut write_guard = write.lock().await;
@@ -353,16 +343,26 @@ fn assign_color(colors: &mut HashMap<String, Color>, uid: &str) {
             Color::Cyan,
             Color::Magenta,
             Color::Red,
-            Color::White,
         ];
-        let chosen_color = *color_choices.choose(&mut rand::thread_rng()).unwrap();
+
+        // Try to find an unused color first
+        let used_colors: HashSet<_> = colors.values().collect();
+        let available_color = color_choices
+            .iter()
+            .find(|color| !used_colors.contains(color))
+            .copied();
+
+        // If all colors are used, fall back to random selection
+        let chosen_color = available_color
+            .unwrap_or_else(|| *color_choices.choose(&mut rand::thread_rng()).unwrap());
+
         colors.insert(uid.to_string(), chosen_color);
     }
 }
 
-fn print_ui(messages: &Vec<String>, colors: &HashMap<String, Color>, _uid: &str, _channel: &str) {
+fn print_ui(messages: &Vec<String>, colors: &HashMap<String, Color>, own_uid: &str) {
     let (_cols, rows) = size().unwrap_or((80, 24));
-    let message_area = rows as usize - 2; // Reserve 2 lines for status and input
+    let message_area = rows as usize - 2;
 
     execute!(
         io::stdout(),
@@ -373,7 +373,6 @@ fn print_ui(messages: &Vec<String>, colors: &HashMap<String, Color>, _uid: &str,
     )
     .unwrap();
 
-    // Print messages
     let start_index = if messages.len() > message_area {
         messages.len() - message_area
     } else {
@@ -388,30 +387,57 @@ fn print_ui(messages: &Vec<String>, colors: &HashMap<String, Color>, _uid: &str,
                 if let Some((sender, message)) = rest.split_once(':') {
                     let sender = sender.trim();
                     let message = message.trim();
-                    // Only show username if it's not a system message and sender isn't empty
+
                     if !sender.is_empty() {
-                        if let Some(color) = colors.get(sender) {
-                            execute!(io::stdout(), SetForegroundColor(*color)).unwrap();
-                            print!("{} {}: ", timestamp, sender);
-                            execute!(io::stdout(), SetForegroundColor(Color::White)).unwrap();
-                            println!("{}", message);
+                        // Get color for sender (including own messages)
+                        let color = if sender == own_uid {
+                            colors.get(sender).unwrap_or(&Color::White)
                         } else {
-                            println!("{} {}: {}", timestamp, sender, message);
-                        }
+                            colors.get(sender).unwrap_or(&Color::Grey)
+                        };
+
+                        // Print timestamp in neutral color
+                        execute!(io::stdout(), SetForegroundColor(Color::Grey)).unwrap();
+                        print!("{} ", timestamp);
+
+                        // Print sender in their color
+                        execute!(io::stdout(), SetForegroundColor(*color)).unwrap();
+                        print!("{}: ", sender);
+
+                        // Print message in default color
+                        execute!(io::stdout(), SetForegroundColor(Color::White)).unwrap();
+                        println!("{}", message);
                     }
                 }
             } else {
-                // For your own messages and system messages
+                // System messages (like join notifications)
+                if rest.contains("joined.") {
+                    if let Some(join_uid) = rest.split_whitespace().next() {
+                        if let Some(color) = colors.get(join_uid) {
+                            execute!(io::stdout(), SetForegroundColor(Color::Grey)).unwrap();
+                            print!("{} ", timestamp);
+                            execute!(io::stdout(), SetForegroundColor(*color)).unwrap();
+                            println!("{} joined.", join_uid);
+                            continue;
+                        }
+                    }
+                }
+                // Default system message format
+                execute!(io::stdout(), SetForegroundColor(Color::Grey)).unwrap();
                 println!("{} {}", timestamp, rest);
             }
-        } else {
-            println!("{}", msg);
         }
+        // Reset color after each message
+        execute!(io::stdout(), SetForegroundColor(Color::White)).unwrap();
     }
 
-    // Move cursor to input line
-    execute!(io::stdout(), cursor::MoveTo(0, rows - 1)).unwrap();
+    // Reset for input line
+    execute!(
+        io::stdout(),
+        cursor::MoveTo(0, rows - 1),
+        SetForegroundColor(Color::White)
+    )
+    .unwrap();
     print!("\r> ");
-
     io::stdout().flush().unwrap();
 }

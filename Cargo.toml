@@ -1,6 +1,6 @@
 [package]
 name = "mles-client"
-version = "2.1.0"
+version = "2.1.1"
 edition = "2024"
 description = "A prototype implementation of the Mles v2 protocol with end-to-end encryption support"
 license = "MPL-2.0"
