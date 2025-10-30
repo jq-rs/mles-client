@@ -1,11 +1,12 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
 use blake2::{Blake2b512, Digest};
-use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce, aead::Aead};
+use chacha20poly1305::{KeyInit, XChaCha20Poly1305, aead::Aead};
 use rand::{RngCore, rngs::OsRng};
 use scrypt::{
     Scrypt,
     password_hash::{PasswordHasher, SaltString},
 };
+
 // Derive a 256-bit encryption key from a password
 pub fn derive_key(password: &str, channel: &str) -> [u8; 32] {
     let mut hasher = Blake2b512::new();
@@ -28,22 +29,24 @@ pub fn encrypt_message(key: &[u8; 32], plaintext: &str) -> Vec<u8> {
     let cipher = XChaCha20Poly1305::new_from_slice(key).unwrap();
     let mut nonce = [0u8; 24]; // 24 bytes for XChaCha20
     OsRng.fill_bytes(&mut nonce);
-    let ciphertext = cipher
-        .encrypt(XNonce::from_slice(&nonce), plaintext.as_bytes())
-        .unwrap();
+
+    // Just pass &nonce directly - no XNonce creation needed!
+    let ciphertext = cipher.encrypt(&nonce.into(), plaintext.as_bytes()).unwrap();
+
     [nonce.to_vec(), ciphertext].concat()
 }
 
 // Decrypt a received message
 pub fn decrypt_message(key: &[u8; 32], encrypted: &[u8]) -> Option<String> {
     if encrypted.len() < 24 {
-        // Changed to 24 bytes
         return None;
     }
-    let (nonce, ciphertext) = encrypted.split_at(24); // Changed to 24
+    let (nonce, ciphertext) = encrypted.split_at(24);
     let cipher = XChaCha20Poly1305::new_from_slice(key).unwrap();
+
+    // Just pass nonce directly with .into() - no XNonce creation needed!
     cipher
-        .decrypt(XNonce::from_slice(nonce), ciphertext)
+        .decrypt(nonce.into(), ciphertext)
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok())
 }

@@ -1,3 +1,4 @@
+use crate::dupdet::{MessageTracker, hash_binary_message};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use siphasher::sip::SipHasher;
@@ -18,9 +19,10 @@ pub async fn run_proxy(
     channel: String,
     uid: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Add counters for messages
+    // Add counters for messages and message tracker
     let messages_s1_to_s2 = Arc::new(AtomicU64::new(0));
     let messages_s2_to_s1 = Arc::new(AtomicU64::new(0));
+    let message_tracker = Arc::new(Mutex::new(MessageTracker::new()));
 
     // Connect to first server
     let mut request1 = server1.clone().into_client_request()?;
@@ -61,12 +63,12 @@ pub async fn run_proxy(
     write1
         .lock()
         .await
-        .send(Message::Text(auth_message.clone()))
+        .send(Message::Text(auth_message.clone().into()))
         .await?;
     write2
         .lock()
         .await
-        .send(Message::Text(auth_message))
+        .send(Message::Text(auth_message.into()))
         .await?;
 
     let write1_clone = Arc::clone(&write1);
@@ -75,25 +77,35 @@ pub async fn run_proxy(
     println!("Proxy established between {} and {}", server1, server2);
 
     let messages_s1_to_s2_clone = Arc::clone(&messages_s1_to_s2);
+    let message_tracker_clone1 = Arc::clone(&message_tracker);
     // Forward messages from server1 to server2
     let task1 = tokio::spawn(async move {
         while let Some(Ok(msg)) = read1.next().await {
             if let Message::Binary(data) = msg {
-                let mut write2 = write2_clone.lock().await;
-                messages_s1_to_s2_clone.fetch_add(1, Ordering::Relaxed);
-                let _ = write2.send(Message::Binary(data)).await;
+                let msg_hash = hash_binary_message(&data);
+                let mut tracker = message_tracker_clone1.lock().await;
+                if !tracker.is_duplicate(msg_hash) {
+                    let mut write2 = write2_clone.lock().await;
+                    messages_s1_to_s2_clone.fetch_add(1, Ordering::Relaxed);
+                    let _ = write2.send(Message::Binary(data)).await;
+                }
             }
         }
     });
 
     let messages_s2_to_s1_clone = Arc::clone(&messages_s2_to_s1);
+    let message_tracker_clone2 = Arc::clone(&message_tracker);
     // Forward messages from server2 to server1
     let task2 = tokio::spawn(async move {
         while let Some(Ok(msg)) = read2.next().await {
             if let Message::Binary(data) = msg {
-                let mut write1 = write1_clone.lock().await;
-                messages_s2_to_s1_clone.fetch_add(1, Ordering::Relaxed);
-                let _ = write1.send(Message::Binary(data)).await;
+                let msg_hash = hash_binary_message(&data);
+                let mut tracker = message_tracker_clone2.lock().await;
+                if !tracker.is_duplicate(msg_hash) {
+                    let mut write1 = write1_clone.lock().await;
+                    messages_s2_to_s1_clone.fetch_add(1, Ordering::Relaxed);
+                    let _ = write1.send(Message::Binary(data)).await;
+                }
             }
         }
     });

@@ -65,24 +65,6 @@ This mode allows bidirectional message forwarding between a Mles server and an M
 
 - `MLES_KEY`: Optional shared key for authentication
 
-## Implementation Notes
-
-This implementation includes:
-- Basic protocol compliance with Mles v2
-- Example encryption using XChaCha20-Poly1305
-- Prototype proxy functionality
-- Simple terminal-based UI
-- MQTT bridge functionality
-
-While functional, this implementation prioritizes demonstrating protocol concepts over production-ready features and security hardening.
-
-## Features in Detail
-
-### Security
-- Secure message encryption using XChaCha20-Poly1305
-- Key derivation using Scrypt with Blake2b hash
-- Authentication using SipHash
-
 ### UI Features
 - Colorized usernames for better readability
 - Local time conversion for timestamps
@@ -95,29 +77,7 @@ While functional, this implementation prioritizes demonstrating protocol concept
 - Live statistics showing message counts
 - Auto-reconnect capabilities
 - Clean shutdown handling
-
-## Building
-
-```bash
-cargo build --release
-```
-
-## Dependencies
-
-- tokio: Async runtime
-- tokio-tungstenite: WebSocket implementation
-- chacha20poly1305: Encryption
-- blake2: Hashing
-- scrypt: Key derivation
-- clap: Command line argument parsing
-- crossterm: Terminal UI
-- serde_json: JSON handling
-- rumqttc: MQTT client implementation
-
-## Acknowledgments
-
-- [Zed](https://zed.dev) - An outstanding text processor that greatly facilitated the development of this project
-- [Claude 3.5 Sonnet](https://www.anthropic.com/claude) - AI assistant that provided valuable help with code suggestions and documentation
+- Message forwarding deduplication to avoid forwarding loops
 
 ## License
 

@@ -10,8 +10,7 @@ use rand::seq::SliceRandom;
 use rpassword::read_password;
 use serde_json::json;
 use siphasher::sip::SipHasher;
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::hash::Hasher;
 use std::io::{self, Write};
@@ -23,6 +22,7 @@ use tokio_tungstenite::{
     connect_async, tungstenite::client::IntoClientRequest, tungstenite::protocol::Message,
 };
 
+mod dupdet;
 mod message;
 mod mqtt_proxy;
 mod proxy;
@@ -103,8 +103,8 @@ async fn main() {
             process::exit(1);
         }
     } else {
-        let seen_messages = Arc::new(Mutex::new(HashSet::new())); // Add this
-        let seen_messages_clone = Arc::clone(&seen_messages);
+        let message_tracker = Arc::new(Mutex::new(dupdet::MessageTracker::new()));
+        let message_tracker_clone = Arc::clone(&message_tracker);
         let url = args.server;
         let mut request = url.into_client_request().expect("Invalid request");
         request
@@ -173,7 +173,7 @@ async fn main() {
         {
             let mut write_guard = write.lock().await;
             write_guard
-                .send(Message::Text(first_message))
+                .send(Message::Text(first_message.into()))
                 .await
                 .unwrap();
         }
@@ -189,8 +189,9 @@ async fn main() {
             while let Some(Ok(msg)) = read.next().await {
                 if let Message::Binary(data) = msg {
                     if let Some(decrypted) = message::decrypt_message(&encryption_key, &data) {
-                        let mut seen = seen_messages_clone.lock().await;
-                        if seen.insert(decrypted.clone()) {
+                        let msg_hash = dupdet::hash_binary_message(decrypted.as_bytes());
+                        let mut tracker = message_tracker_clone.lock().await;
+                        if !tracker.is_duplicate(msg_hash) {
                             let mut msgs = messages_clone.lock().await;
                             let mut colors = user_colors_clone.lock().await;
 
@@ -224,7 +225,7 @@ async fn main() {
             let _ = shutdown_tx.send(()).await;
         });
 
-        let seen_messages_send = Arc::clone(&seen_messages);
+        let message_tracker_send = Arc::clone(&message_tracker);
         // Input handling in a separate task
         let input_handler = tokio::spawn(async move {
             let mut input = String::new();
@@ -250,19 +251,20 @@ async fn main() {
                     let input = line.trim();
                     if !input.is_empty() {
                         let timestamp = get_timestamp();
-                        let mut seen = seen_messages_send.lock().await;
                         let formatted_message = format!("{} {}: {}", timestamp, uid, input);
-                        if seen.insert(formatted_message.clone()) {
+                        let msg_hash = dupdet::hash_binary_message(formatted_message.as_bytes());
+                        let mut tracker = message_tracker_send.lock().await;
+                        if !tracker.is_duplicate(msg_hash) {
                             let mut msgs = messages.lock().await;
                             msgs.push(format!("{} {}: {}", timestamp, uid, input));
                             drop(msgs);
 
                             let mut write_guard = write.lock().await;
                             if let Err(e) = write_guard
-                                .send(Message::Binary(message::encrypt_message(
-                                    &encryption_key,
-                                    &formatted_message,
-                                )))
+                                .send(Message::Binary(
+                                    message::encrypt_message(&encryption_key, &formatted_message)
+                                        .into(),
+                                ))
                                 .await
                             {
                                 eprintln!("\nFailed to send message: {}", e);

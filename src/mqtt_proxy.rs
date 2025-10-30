@@ -1,3 +1,4 @@
+use crate::dupdet::{MessageTracker, hash_binary_message};
 use futures_util::{SinkExt, StreamExt};
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use serde_json::json;
@@ -36,6 +37,7 @@ pub async fn run_mqtt_proxy(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let messages_mles_to_mqtt = Arc::new(AtomicU64::new(0));
     let messages_mqtt_to_mles = Arc::new(AtomicU64::new(0));
+    let message_tracker = Arc::new(Mutex::new(MessageTracker::new()));
 
     // Create clones for the stats task
     let messages_mles_to_mqtt_stats = Arc::clone(&messages_mles_to_mqtt);
@@ -125,7 +127,11 @@ pub async fn run_mqtt_proxy(
         .to_string()
     };
 
-    write.lock().await.send(Message::Text(auth_message)).await?;
+    write
+        .lock()
+        .await
+        .send(Message::Text(auth_message.into()))
+        .await?;
 
     let write_clone = Arc::clone(&write);
     println!(
@@ -154,14 +160,19 @@ pub async fn run_mqtt_proxy(
     let mqtt_client_clone = mqtt_client.clone();
     let messages_mles_to_mqtt_clone = Arc::clone(&messages_mles_to_mqtt);
     let channel_clone = channel.clone();
+    let message_tracker_clone1 = Arc::clone(&message_tracker);
     let mles_to_mqtt = tokio::spawn(async move {
         while let Some(Ok(msg)) = read.next().await {
             if let Message::Binary(data) = msg {
-                mqtt_client_clone
-                    .publish(&channel_clone, QoS::AtLeastOnce, false, data)
-                    .await
-                    .map_err(|e| ProxyError(e.to_string()))?;
-                messages_mles_to_mqtt_clone.fetch_add(1, Ordering::Relaxed);
+                let msg_hash = hash_binary_message(&data);
+                let mut tracker = message_tracker_clone1.lock().await;
+                if !tracker.is_duplicate(msg_hash) {
+                    mqtt_client_clone
+                        .publish(&channel_clone, QoS::AtLeastOnce, false, data)
+                        .await
+                        .map_err(|e| ProxyError(e.to_string()))?;
+                    messages_mles_to_mqtt_clone.fetch_add(1, Ordering::Relaxed);
+                }
             }
         }
         println!("\nMles to MQTT forwarding ended");
@@ -170,6 +181,7 @@ pub async fn run_mqtt_proxy(
 
     let write_clone2 = Arc::clone(&write_clone);
     let messages_mqtt_to_mles_clone = Arc::clone(&messages_mqtt_to_mles);
+    let message_tracker_clone2 = Arc::clone(&message_tracker);
     let mqtt_to_mles = tokio::spawn(async move {
         let result: Result<(), ProxyError> = async {
             loop {
@@ -177,12 +189,16 @@ pub async fn run_mqtt_proxy(
                     Ok(notification) => {
                         match notification {
                             Event::Incoming(Packet::Publish(msg)) => {
-                                let mut write = write_clone2.lock().await;
-                                write
-                                    .send(Message::Binary(msg.payload.to_vec()))
-                                    .await
-                                    .map_err(|e| ProxyError(e.to_string()))?;
-                                messages_mqtt_to_mles_clone.fetch_add(1, Ordering::Relaxed);
+                                let msg_hash = hash_binary_message(&msg.payload);
+                                let mut tracker = message_tracker_clone2.lock().await;
+                                if !tracker.is_duplicate(msg_hash) {
+                                    let mut write = write_clone2.lock().await;
+                                    write
+                                        .send(Message::Binary(msg.payload))
+                                        .await
+                                        .map_err(|e| ProxyError(e.to_string()))?;
+                                    messages_mqtt_to_mles_clone.fetch_add(1, Ordering::Relaxed);
+                                }
                             }
                             Event::Incoming(Packet::Disconnect) => {
                                 println!("\nMQTT broker disconnected, attempting reconnect...");
