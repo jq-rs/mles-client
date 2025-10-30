@@ -178,6 +178,13 @@ async fn main() {
                 .unwrap();
         }
 
+        // Initialize the UI immediately after connecting
+        {
+            let msgs = messages.lock().await;
+            let colors = user_colors.lock().await;
+            print_ui(&*msgs, &*colors, &uid);
+        }
+
         // Create a channel to signal program termination
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
         let shutdown_tx_clone = shutdown_tx.clone();
