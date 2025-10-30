@@ -7,11 +7,9 @@ A prototype implementation of the [Mles v2 protocol](https://github.com/jq-rs/ml
 
 **⚠️ Important Note:** This is a prototype implementation intended for demonstration and learning purposes. It should not be used in production environments or for any critical applications.
 
-## About Mles Protocol
-
-This client implements the [Mles v2 protocol](https://github.com/jq-rs/mles-rs) (Modern Lightweight channEl Service), a client-server data distribution protocol designed for lightweight and reliable distributed publish-subscribe data service. For production implementations and more detailed protocol specifications, please visit https://mles.io.
-
 ## Client Features
+
+<img width="603" height="232" alt="kuva" src="https://github.com/user-attachments/assets/47e5e458-b9d2-4745-96f5-158064ab127c" />
 
 - End-to-end encryption using XChaCha20-Poly1305
 - Real-time messaging with colorized usernames
@@ -78,6 +76,10 @@ This mode allows bidirectional message forwarding between a Mles server and an M
 - Auto-reconnect capabilities
 - Clean shutdown handling
 - Message forwarding deduplication to avoid forwarding loops
+
+## About Mles Protocol
+
+This client implements the [Mles v2 protocol](https://github.com/jq-rs/mles-rs) (Modern Lightweight channEl Service), a client-server data distribution protocol designed for lightweight and reliable distributed publish-subscribe data service. For production implementations and more detailed protocol specifications, please visit https://mles.io.
 
 ## License
 
